@@ -1,99 +1,125 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from "react-native";
+import StatsCard from "@/components/StatsCard";
+import Colors from "@/constants/colors";
+import { useEffect, useState } from "react";
+import { getCurrentUserProfile } from "@/services/userService";
+import FocusTimer from "@/components/FocusTimer";
+import { getFocusSessions } from "@/services/focusService";
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+export default function Home() {
+  const [name, setName] = useState("User");
+  const [focusMinutes, setFocusMinutes] = useState(0);
+const [sessions, setSessions] = useState(0);
 
+useEffect(() => {
+  async function loadUser() {
+    const profile = await getCurrentUserProfile();
 
-export default function HomeScreen() {
+    const data = await getFocusSessions();
+
+setSessions(data.length);
+
+const total = data.reduce(
+  (sum: number, item: any) => sum + item.duration,
+  0
+);
+
+setFocusMinutes(total);
+    if (profile?.fullName) {
+      setName(profile.fullName);
+    }
+  }
+
+  loadUser();
+}, []);
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={{ paddingBottom: 40 }}
+    >
+      <Text style={styles.greeting}>👋 Good Afternoon</Text>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+      <Text style={styles.name}>
+  Welcome back, {name}
+</Text>
+
+      <View style={styles.row}>
+        <StatsCard
+  title="Today's Focus"
+  value={`${Math.floor(focusMinutes / 60)}h ${focusMinutes % 60}m`}
+/>
+       <StatsCard
+  title="Goal"
+  value={`${sessions}/5`}
+/>
+      </View>
+
+      <View style={styles.row}>
+        <StatsCard title="Streak" value="0 Days" />
+        <StatsCard title="Score" value="100%" />
+      </View>
+
+     <FocusTimer />
+     
+      <Text style={styles.sectionTitle}>Recent Activity</Text>
+
+      <View style={styles.activityCard}>
+        <Text>No focus sessions yet.</Text>
+      </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  container: {
+    flex: 1,
+    backgroundColor: Colors.background,
+    padding: 20,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+
+  greeting: {
+    fontSize: 18,
+    color: Colors.gray,
+    marginTop: 20,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+
+  name: {
+    fontSize: 30,
+    fontWeight: "bold",
+    color: Colors.text,
+    marginBottom: 25,
+  },
+
+  row: {
+    flexDirection: "row",
+    marginBottom: 15,
+  },
+
+  button: {
+    backgroundColor: Colors.primary,
+    padding: 18,
+    borderRadius: 18,
+    marginTop: 15,
+    alignItems: "center",
+  },
+
+  buttonText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 18,
+  },
+
+  sectionTitle: {
+    marginTop: 30,
+    fontSize: 20,
+    fontWeight: "bold",
+    color: Colors.text,
+  },
+
+  activityCard: {
+    backgroundColor: Colors.white,
+    padding: 20,
+    borderRadius: 16,
+    marginTop: 15,
   },
 });
