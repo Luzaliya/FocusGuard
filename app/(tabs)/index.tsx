@@ -6,32 +6,38 @@ import { getCurrentUserProfile } from "@/services/userService";
 import FocusTimer from "@/components/FocusTimer";
 import { getFocusSessions } from "@/services/focusService";
 
+
 export default function Home() {
   const [name, setName] = useState("User");
   const [focusMinutes, setFocusMinutes] = useState(0);
-const [sessions, setSessions] = useState(0);
+
+const [sessions, setSessions] = useState<any[]>([]);
 
 useEffect(() => {
-  async function loadUser() {
-    const profile = await getCurrentUserProfile();
+  loadDashboard();
+}, []);
 
-    const data = await getFocusSessions();
+const loadDashboard = async () => {
+  const profile = await getCurrentUserProfile();
 
-setSessions(data.length);
-
-const total = data.reduce(
-  (sum: number, item: any) => sum + item.duration,
-  0
-);
-
-setFocusMinutes(total);
-    if (profile?.fullName) {
-      setName(profile.fullName);
-    }
+  if (profile?.fullName) {
+    setName(profile.fullName);
   }
 
-  loadUser();
-}, []);
+  const data = await getFocusSessions();
+
+  setSessions(data);
+
+  const total = data.reduce(
+    (sum: number, item: any) => sum + item.duration,
+    0
+  );
+
+  setFocusMinutes(total);
+};
+
+<FocusTimer onSessionComplete={loadDashboard} />
+
   return (
     <ScrollView
       style={styles.container}
@@ -48,9 +54,9 @@ setFocusMinutes(total);
   title="Today's Focus"
   value={`${Math.floor(focusMinutes / 60)}h ${focusMinutes % 60}m`}
 />
-       <StatsCard
+   <StatsCard
   title="Goal"
-  value={`${sessions}/5`}
+  value={`${sessions.length}/5`}
 />
       </View>
 
@@ -63,9 +69,27 @@ setFocusMinutes(total);
      
       <Text style={styles.sectionTitle}>Recent Activity</Text>
 
-      <View style={styles.activityCard}>
-        <Text>No focus sessions yet.</Text>
-      </View>
+    
+
+{sessions.length === 0 ? (
+  <View style={styles.activityCard}>
+    <Text>No focus sessions yet.</Text>
+  </View>
+) : (
+  sessions.map((session: any, index: number) => (
+    <View key={index} style={styles.activityCard}>
+      <Text style={{ fontWeight: "bold" }}>
+        ✅ {session.duration} minutes
+      </Text>
+
+      <Text style={{ color: "#666", marginTop: 5 }}>
+        {session.completedAt?.toDate
+          ? session.completedAt.toDate().toLocaleString()
+          : "Just now"}
+      </Text>
+    </View>
+  ))
+)}
     </ScrollView>
   );
 }

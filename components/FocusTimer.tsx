@@ -5,29 +5,53 @@ import { saveFocusSession } from "@/services/focusService";
 
 const DEFAULT_TIME = 25 * 60;
 
-export default function FocusTimer() {
+type FocusTimerProps = {
+  onSessionComplete?: () => void;
+};
+
+export default function FocusTimer({
+  onSessionComplete,
+}: FocusTimerProps) {
   const [seconds, setSeconds] = useState(DEFAULT_TIME);
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
-  let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval>;
 
-  if (running && seconds > 0) {
-    interval = setInterval(() => {
-      setSeconds((prev) => prev - 1);
-    }, 1000);
-  }
+    if (running && seconds > 0) {
+      interval = setInterval(() => {
+        setSeconds((prev) => prev - 1);
+      }, 1000);
+    }
 
-  if (running && seconds === 0) {
-    setRunning(false);
+    if (running && seconds === 0) {
+      setRunning(false);
 
-    saveFocusSession(25);
+      (async () => {
+        try {
+          await saveFocusSession(25);
 
-    alert("🎉 Focus session completed!");
-  }
+          // Refresh the dashboard
+          onSessionComplete?.();
 
-  return () => clearInterval(interval);
-}, [running, seconds]);
+          alert("🎉 Focus session completed!");
+
+          // Reset timer automatically for the next session
+          setSeconds(DEFAULT_TIME);
+        } catch (error: any) {
+          console.log(error);
+          alert(error.message);
+        }
+      })();
+    }
+
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
+  }, [running, seconds, onSessionComplete]);
+
   const minutes = Math.floor(seconds / 60);
   const secs = seconds % 60;
 
