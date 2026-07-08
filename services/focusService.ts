@@ -29,7 +29,8 @@ export async function saveFocusSession(minutes: number) {
 }
 
 
-export async function getFocusSessions() {
+
+  export async function getFocusSessions() {
   const user = auth.currentUser;
 
   if (!user) return [];
@@ -41,5 +42,16 @@ export async function getFocusSessions() {
 
   const snapshot = await getDocs(q);
 
-  return snapshot.docs.map((doc) => doc.data());
+  return snapshot.docs
+    .map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }))
+    .sort(
+      (a: any, b: any) =>
+        b.completedAt?.toDate()?.getTime() -
+        a.completedAt?.toDate()?.getTime()
+    );
 }
+
+  

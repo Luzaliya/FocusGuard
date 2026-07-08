@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { getCurrentUserProfile } from "@/services/userService";
 import FocusTimer from "@/components/FocusTimer";
 import { getFocusSessions } from "@/services/focusService";
+import { calculateStreak } from "@/services/streakService";
 
 
 export default function Home() {
@@ -12,6 +13,8 @@ export default function Home() {
   const [focusMinutes, setFocusMinutes] = useState(0);
 
 const [sessions, setSessions] = useState<any[]>([]);
+const [streak, setStreak] = useState(0);
+const [score, setScore] = useState(0);
 
 useEffect(() => {
   loadDashboard();
@@ -34,6 +37,16 @@ const loadDashboard = async () => {
   );
 
   setFocusMinutes(total);
+
+  const calculatedScore = Math.min(
+  Math.round((data.length / 5) * 100),
+  100
+);
+
+setScore(calculatedScore);
+
+  const currentStreak = await calculateStreak();
+setStreak(currentStreak);
 };
 
 <FocusTimer onSessionComplete={loadDashboard} />
@@ -57,12 +70,19 @@ const loadDashboard = async () => {
    <StatsCard
   title="Goal"
   value={`${sessions.length}/5`}
+  progress={(sessions.length / 5) * 100}
 />
       </View>
 
       <View style={styles.row}>
-        <StatsCard title="Streak" value="0 Days" />
-        <StatsCard title="Score" value="100%" />
+        <StatsCard
+  title="Streak"
+  value={`🔥 ${streak} Days`}
+/>
+        <StatsCard
+  title="Score"
+  value={`${score}%`}
+/>
       </View>
 
      <FocusTimer />
