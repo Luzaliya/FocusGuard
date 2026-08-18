@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView } from "react-native";
 import Colors from "@/constants/colors";
 import { getFocusSessions } from "@/services/focusService";
+import { Dimensions } from "react-native";
+import { BarChart } from "react-native-chart-kit";
 
 export default function Analytics() {
   const [totalSessions, setTotalSessions] = useState(0);
@@ -24,6 +26,15 @@ export default function Analytics() {
     setTotalMinutes(minutes);
   }
 
+const chartData = {
+  labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+  datasets: [
+    {
+      data: [25, 50, 75, 30, 60, 45, 20],
+    },
+  ],
+};
+
   return (
     <ScrollView style={styles.container}>
       <Text style={styles.title}>📊 Analytics</Text>
@@ -39,9 +50,37 @@ export default function Analytics() {
           {Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m
         </Text>
       </View>
+
+<Text style={styles.sectionTitle}>This Week</Text>
+
+<BarChart
+  data={chartData}
+  width={Dimensions.get("window").width - 40}
+  height={220}
+  fromZero
+  yAxisLabel=""
+  yAxisSuffix="m"
+  chartConfig={{
+    backgroundGradientFrom: "#ffffff",
+    backgroundGradientTo: "#ffffff",
+    decimalPlaces: 0,
+    color: (opacity = 1) => `rgba(37, 99, 235, ${opacity})`,
+    labelColor: (opacity = 1) => `rgba(107, 114, 128, ${opacity})`,
+    style: {
+      borderRadius: 16,
+    },
+  }}
+  style={{
+    marginVertical: 16,
+    borderRadius: 16,
+  }}
+/>
+
     </ScrollView>
   );
 }
+
+
 
 const styles = StyleSheet.create({
   container: {
@@ -76,4 +115,12 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     marginTop: 10,
   },
+
+  sectionTitle: {
+  fontSize: 20,
+  fontWeight: "bold",
+  color: Colors.text,
+  marginTop: 20,
+  marginBottom: 10,
+},
 });

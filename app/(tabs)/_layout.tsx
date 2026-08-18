@@ -3,7 +3,18 @@ import { Ionicons } from "@expo/vector-icons";
 
 export default function TabLayout() {
   return (
-    <Tabs screenOptions={{ headerShown: false }}>
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: "#4F46E5",
+        tabBarInactiveTintColor: "#6B7280",
+        tabBarStyle: {
+          height: 65,
+          paddingBottom: 8,
+          paddingTop: 8,
+        },
+      }}
+    >
       <Tabs.Screen
         name="index"
         options={{
@@ -29,7 +40,11 @@ export default function TabLayout() {
         options={{
           title: "Goals",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="checkmark-circle" color={color} size={size} />
+            <Ionicons
+              name="checkmark-circle"
+              color={color}
+              size={size}
+            />
           ),
         }}
       />
@@ -53,6 +68,24 @@ export default function TabLayout() {
           ),
         }}
       />
+
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: "Settings",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="settings" color={color} size={size} />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+  name="app-limits"
+  options={{
+    href: null,
+  }}
+/>
+
     </Tabs>
   );
 }
