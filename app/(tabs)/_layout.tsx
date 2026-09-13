@@ -1,5 +1,6 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { IconSymbol } from "@/components/ui/icon-symbol";
 
 export default function TabLayout() {
   return (
@@ -82,10 +83,17 @@ export default function TabLayout() {
       <Tabs.Screen
   name="app-limits"
   options={{
-    href: null,
+    title: "App Limits",
+    tabBarLabel: "Limits",
+    tabBarIcon: ({ color }) => (
+      <IconSymbol
+        name="hourglass"
+        color={color}
+        size={24}
+      />
+    ),
   }}
 />
-
-    </Tabs>
+</Tabs>
   );
 }
