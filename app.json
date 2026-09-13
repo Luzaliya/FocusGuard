@@ -7,7 +7,6 @@
     "icon": "./assets/images/icon.png",
     "scheme": "focusguard",
     "userInterfaceStyle": "automatic",
-    
     "ios": {
       "supportsTablet": true
     },
@@ -18,7 +17,6 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-    
       "predictiveBackGestureEnabled": false,
       "package": "com.anonymous.FocusGuard"
     },
@@ -48,6 +46,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "824a141a-7574-4efb-b08c-8a6968b982db"
+      }
     }
   }
 }
