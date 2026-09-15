@@ -1,7 +1,9 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Modal,
+  Platform,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -11,20 +13,26 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect } from "expo-router";
 import {
+  addDoc,
   collection,
   deleteDoc,
   doc,
   getDocs,
   query,
-  where,
-  addDoc,
   serverTimestamp,
   updateDoc,
+  where,
 } from "firebase/firestore";
+import { useFocusEffect } from "@react-navigation/native";
 
-import { auth, db } from "../../services/firebase";
+import { auth, db } from "@/services/firebase";
+import {
+  formatUsageTime,
+  getTodayAppUsage,
+  hasUsageAccess,
+  openUsageAccessSettings,
+} from "@/services/usageStatsService";
 
 interface AppLimit {
   id: string;
@@ -34,78 +42,73 @@ interface AppLimit {
   createdAt?: any;
 }
 
+interface UsageData {
+  [appName: string]: number;
+}
+
 const APPS = [
   {
     name: "Instagram",
-    icon: "logo-instagram" as keyof typeof Ionicons.glyphMap,
+    icon: "logo-instagram" as const,
   },
   {
     name: "TikTok",
-    icon: "musical-notes" as keyof typeof Ionicons.glyphMap,
+    icon: "musical-notes" as const,
   },
   {
     name: "Facebook",
-    icon: "logo-facebook" as keyof typeof Ionicons.glyphMap,
+    icon: "logo-facebook" as const,
   },
   {
     name: "YouTube",
-    icon: "logo-youtube" as keyof typeof Ionicons.glyphMap,
+    icon: "logo-youtube" as const,
   },
   {
     name: "X",
-    icon: "logo-twitter" as keyof typeof Ionicons.glyphMap,
+    icon: "logo-twitter" as const,
   },
   {
     name: "WhatsApp",
-    icon: "logo-whatsapp" as keyof typeof Ionicons.glyphMap,
+    icon: "logo-whatsapp" as const,
   },
 ];
 
 const LIMIT_OPTIONS = [15, 30, 45, 60, 90, 120];
 
-function getAppIcon(appName: string) {
-  const app = APPS.find((item) => item.name === appName);
-
-  return (
-    app?.icon ||
-    ("phone-portrait-outline" as keyof typeof Ionicons.glyphMap)
-  );
-}
-
-function formatLimit(minutes: number) {
-  if (minutes < 60) {
-    return `${minutes} min/day`;
-  }
-
-  const hours = Math.floor(minutes / 60);
-  const remaining = minutes % 60;
-
-  if (remaining === 0) {
-    return `${hours} hr/day`;
-  }
-
-  return `${hours} hr ${remaining} min/day`;
-}
-
 export default function AppLimitsScreen() {
   const [limits, setLimits] = useState<AppLimit[]>([]);
+  const [usage, setUsage] = useState<UsageData>({});
+  const [usageAccessGranted, setUsageAccessGranted] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [checkingUsage, setCheckingUsage] = useState(false);
 
   const [modalVisible, setModalVisible] = useState(false);
+  const [editingLimit, setEditingLimit] = useState<AppLimit | null>(null);
 
-  const [selectedApp, setSelectedApp] =
-    useState("Instagram");
-
-  const [selectedLimit, setSelectedLimit] =
-    useState(30);
-
-  const [editingId, setEditingId] =
-    useState<string | null>(null);
-
-  const [saving, setSaving] = useState(false);
+  const [selectedApp, setSelectedApp] = useState("Instagram");
+  const [selectedLimit, setSelectedLimit] = useState(60);
+  const [customLimit, setCustomLimit] = useState("");
 
   const currentUser = auth.currentUser;
+
+  const checkUsageAccess = useCallback(() => {
+    if (Platform.OS !== "android") {
+      setUsageAccessGranted(false);
+      return;
+    }
+
+    try {
+      const granted = hasUsageAccess();
+      setUsageAccessGranted(granted);
+      return granted;
+    } catch (error) {
+      console.log("Usage access check failed:", error);
+      setUsageAccessGranted(false);
+      return false;
+    }
+  }, []);
 
   const loadLimits = useCallback(async () => {
     if (!currentUser) {
@@ -115,37 +118,25 @@ export default function AppLimitsScreen() {
     }
 
     try {
-      const limitsQuery = query(
+      const q = query(
         collection(db, "appLimits"),
         where("userId", "==", currentUser.uid)
       );
 
-      const snapshot = await getDocs(limitsQuery);
+      const snapshot = await getDocs(q);
 
-      const loadedLimits: AppLimit[] = snapshot.docs.map(
-        (item) => ({
-          id: item.id,
-          ...(item.data() as Omit<AppLimit, "id">),
-        })
-      );
-
-      loadedLimits.sort(
-        (a, b) =>
-          String(a.appName).localeCompare(
-            String(b.appName)
-          )
-      );
+      const loadedLimits: AppLimit[] = snapshot.docs.map((item) => ({
+        id: item.id,
+        ...(item.data() as Omit<AppLimit, "id">),
+      }));
 
       setLimits(loadedLimits);
     } catch (error) {
-      console.error(
-        "Error loading app limits:",
-        error
-      );
+      console.error("Error loading app limits:", error);
 
       Alert.alert(
         "Error",
-        "Unable to load your app limits."
+        "Unable to load your app limits. Please try again."
       );
     } finally {
       setLoading(false);
@@ -153,247 +144,411 @@ export default function AppLimitsScreen() {
     }
   }, [currentUser]);
 
+  const loadUsage = useCallback(async () => {
+    if (Platform.OS !== "android") {
+      return;
+    }
+
+    if (!currentUser) {
+      return;
+    }
+
+    const granted = checkUsageAccess();
+
+    if (!granted) {
+      setUsage({});
+      return;
+    }
+
+    if (limits.length === 0) {
+      setUsage({});
+      return;
+    }
+
+    setCheckingUsage(true);
+
+    try {
+      const usageResults: UsageData = {};
+
+      for (const limit of limits) {
+        try {
+          const result = await getTodayAppUsage(limit.appName);
+
+          if (result) {
+            usageResults[limit.appName] =
+              result.totalTimeInForeground;
+          }
+        } catch (error) {
+          console.log(
+            `Unable to get usage for ${limit.appName}:`,
+            error
+          );
+        }
+      }
+
+      setUsage(usageResults);
+    } catch (error) {
+      console.error("Error loading usage:", error);
+    } finally {
+      setCheckingUsage(false);
+    }
+  }, [currentUser, limits, checkUsageAccess]);
+
+  useEffect(() => {
+    loadLimits();
+  }, [loadLimits]);
+
   useFocusEffect(
     useCallback(() => {
+      checkUsageAccess();
+
       loadLimits();
-    }, [loadLimits])
+    }, [checkUsageAccess, loadLimits])
   );
 
+  useEffect(() => {
+    if (usageAccessGranted && limits.length > 0) {
+      loadUsage();
+    }
+  }, [usageAccessGranted, limits.length]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+
+    checkUsageAccess();
+
+    await loadLimits();
+
+    if (usageAccessGranted) {
+      await loadUsage();
+    }
+  };
+
   const openAddModal = () => {
-    setEditingId(null);
-
-    const availableApp =
-      APPS.find(
-        (app) =>
-          !limits.some(
-            (limit) => limit.appName === app.name
-          )
-      )?.name || "Instagram";
-
-    setSelectedApp(availableApp);
-    setSelectedLimit(30);
+    setEditingLimit(null);
+    setSelectedApp("Instagram");
+    setSelectedLimit(60);
+    setCustomLimit("");
     setModalVisible(true);
   };
 
   const openEditModal = (limit: AppLimit) => {
-    setEditingId(limit.id);
+    setEditingLimit(limit);
     setSelectedApp(limit.appName);
-    setSelectedLimit(limit.dailyLimit);
+
+    if (LIMIT_OPTIONS.includes(limit.dailyLimit)) {
+      setSelectedLimit(limit.dailyLimit);
+      setCustomLimit("");
+    } else {
+      setSelectedLimit(0);
+      setCustomLimit(String(limit.dailyLimit));
+    }
+
     setModalVisible(true);
+  };
+
+  const closeModal = () => {
+    setModalVisible(false);
+    setEditingLimit(null);
+    setCustomLimit("");
   };
 
   const saveLimit = async () => {
     if (!currentUser) {
-      Alert.alert(
-        "Login Required",
-        "Please log in to manage app limits."
-      );
-
+      Alert.alert("Login Required", "Please sign in first.");
       return;
     }
 
-    if (!selectedApp || selectedLimit <= 0) {
-      Alert.alert(
-        "Invalid Limit",
-        "Please select an app and a valid daily limit."
-      );
+    let finalLimit = selectedLimit;
 
-      return;
+    if (selectedLimit === 0) {
+      finalLimit = Number(customLimit);
+
+      if (!finalLimit || finalLimit <= 0) {
+        Alert.alert(
+          "Invalid Limit",
+          "Please enter a valid number of minutes."
+        );
+        return;
+      }
     }
-
-    setSaving(true);
 
     try {
-      if (editingId) {
-        const limitRef = doc(
-          db,
-          "appLimits",
-          editingId
-        );
-
-        await updateDoc(limitRef, {
+      if (editingLimit) {
+        await updateDoc(doc(db, "appLimits", editingLimit.id), {
           appName: selectedApp,
-          dailyLimit: selectedLimit,
+          dailyLimit: finalLimit,
           updatedAt: serverTimestamp(),
         });
 
-        Alert.alert(
-          "Limit Updated",
-          `${selectedApp} is now limited to ${formatLimit(
-            selectedLimit
-          )}.`
-        );
+        Alert.alert("Success", "App limit updated.");
       } else {
-        const alreadyExists = limits.some(
-          (limit) =>
-            limit.appName === selectedApp
+        const existingQuery = query(
+          collection(db, "appLimits"),
+          where("userId", "==", currentUser.uid),
+          where("appName", "==", selectedApp)
         );
 
-        if (alreadyExists) {
+        const existingSnapshot = await getDocs(existingQuery);
+
+        if (!existingSnapshot.empty) {
           Alert.alert(
-            "Limit Already Exists",
+            "Already Added",
             `${selectedApp} already has a daily limit. Edit the existing limit instead.`
           );
-
-          setSaving(false);
           return;
         }
 
         await addDoc(collection(db, "appLimits"), {
           userId: currentUser.uid,
           appName: selectedApp,
-          dailyLimit: selectedLimit,
+          dailyLimit: finalLimit,
           createdAt: serverTimestamp(),
         });
 
-        Alert.alert(
-          "Limit Saved",
-          `${selectedApp} is now limited to ${formatLimit(
-            selectedLimit
-          )}.`
-        );
+        Alert.alert("Success", `${selectedApp} limit added.`);
       }
 
-      setModalVisible(false);
-      setEditingId(null);
-
+      closeModal();
       await loadLimits();
     } catch (error) {
-      console.error(
-        "Error saving app limit:",
-        error
-      );
+      console.error("Error saving app limit:", error);
 
       Alert.alert(
         "Error",
         "Unable to save the app limit. Please try again."
       );
-    } finally {
-      setSaving(false);
     }
   };
 
   const deleteLimit = (limit: AppLimit) => {
+    const performDelete = async () => {
+      try {
+        await deleteDoc(doc(db, "appLimits", limit.id));
+
+        setLimits((previous) =>
+          previous.filter((item) => item.id !== limit.id)
+        );
+
+        setUsage((previous) => {
+          const updated = { ...previous };
+          delete updated[limit.appName];
+          return updated;
+        });
+      } catch (error) {
+        console.error("Error deleting limit:", error);
+
+        Alert.alert(
+          "Error",
+          "Unable to delete this app limit."
+        );
+      }
+    };
+
+    if (Platform.OS === "web") {
+      const confirmed = window.confirm(
+        `Delete the ${limit.appName} limit?`
+      );
+
+      if (confirmed) {
+        performDelete();
+      }
+
+      return;
+    }
+
     Alert.alert(
-      "Remove App Limit",
-      `Are you sure you want to remove the limit for ${limit.appName}?`,
+      "Delete Limit",
+      `Are you sure you want to remove the ${limit.appName} limit?`,
       [
         {
           text: "Cancel",
           style: "cancel",
         },
         {
-          text: "Remove",
+          text: "Delete",
           style: "destructive",
-          onPress: async () => {
-            try {
-              await deleteDoc(
-                doc(db, "appLimits", limit.id)
-              );
-
-              await loadLimits();
-
-              Alert.alert(
-                "Limit Removed",
-                `${limit.appName} is no longer on your protection list.`
-              );
-            } catch (error) {
-              console.error(
-                "Error deleting app limit:",
-                error
-              );
-
-              Alert.alert(
-                "Error",
-                "Unable to remove the app limit."
-              );
-            }
-          },
+          onPress: performDelete,
         },
       ]
     );
   };
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    loadLimits();
+  const getUsagePercentage = (
+    appName: string,
+    dailyLimit: number
+  ) => {
+    const usedMilliseconds = usage[appName] || 0;
+    const usedMinutes = usedMilliseconds / 60000;
+
+    if (dailyLimit <= 0) {
+      return 0;
+    }
+
+    return Math.min((usedMinutes / dailyLimit) * 100, 100);
   };
 
-  const availableApps = APPS.filter(
-    (app) =>
-      editingId ||
-      !limits.some(
-        (limit) => limit.appName === app.name
-      )
-  );
+  const isLimitReached = (
+    appName: string,
+    dailyLimit: number
+  ) => {
+    const usedMilliseconds = usage[appName] || 0;
+    const usedMinutes = usedMilliseconds / 60000;
+
+    return usedMinutes >= dailyLimit;
+  };
+
+  const getAppIcon = (appName: string) => {
+    const app = APPS.find((item) => item.name === appName);
+
+    return app?.icon || "apps";
+  };
 
   return (
     <View style={styles.container}>
       <ScrollView
-        contentContainerStyle={styles.contentContainer}
+        contentContainerStyle={styles.scrollContent}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={handleRefresh}
-            tintColor="#4F46E5"
+            onRefresh={onRefresh}
           />
         }
-        showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <View style={styles.header}>
-          <View style={styles.headerText}>
-            <Text style={styles.title}>
-              App Protection
-            </Text>
+          <Text style={styles.title}>App Limits</Text>
 
-            <Text style={styles.subtitle}>
-              Set healthy limits for distracting apps.
+          <Text style={styles.subtitle}>
+            Manage your daily social media usage and stay focused.
+          </Text>
+        </View>
+
+        {/* USAGE ACCESS CARD */}
+        <View style={styles.usageAccessCard}>
+          <View style={styles.usageAccessHeader}>
+            <View style={styles.usageIconContainer}>
+              <Ionicons
+                name="analytics-outline"
+                size={24}
+                color="#111827"
+              />
+            </View>
+
+            <View style={styles.usageHeaderText}>
+              <Text style={styles.usageAccessTitle}>
+                Usage Monitoring
+              </Text>
+
+              <Text style={styles.usageAccessSubtitle}>
+                {usageAccessGranted
+                  ? "Real app usage monitoring is enabled."
+                  : "Permission is required to monitor app usage."}
+              </Text>
+            </View>
+          </View>
+
+          <View
+            style={[
+              styles.statusContainer,
+              usageAccessGranted
+                ? styles.statusEnabled
+                : styles.statusDisabled,
+            ]}
+          >
+            <Ionicons
+              name={
+                usageAccessGranted
+                  ? "checkmark-circle"
+                  : "alert-circle"
+              }
+              size={18}
+              color={
+                usageAccessGranted
+                  ? "#15803D"
+                  : "#B45309"
+              }
+            />
+
+            <Text
+              style={[
+                styles.statusText,
+                usageAccessGranted
+                  ? styles.statusTextEnabled
+                  : styles.statusTextDisabled,
+              ]}
+            >
+              {usageAccessGranted
+                ? "Usage Access is enabled"
+                : "Usage Access is required"}
             </Text>
           </View>
 
-          <View style={styles.headerIcon}>
-            <Ionicons
-              name="shield-checkmark-outline"
-              size={27}
-              color="#4F46E5"
-            />
+          {!usageAccessGranted &&
+            Platform.OS === "android" && (
+              <TouchableOpacity
+                style={styles.permissionButton}
+                onPress={openUsageAccessSettings}
+              >
+                <Ionicons
+                  name="settings-outline"
+                  size={18}
+                  color="#FFFFFF"
+                />
+
+                <Text style={styles.permissionButtonText}>
+                  Grant Usage Access
+                </Text>
+              </TouchableOpacity>
+            )}
+
+          {usageAccessGranted && (
+            <TouchableOpacity
+              style={styles.refreshUsageButton}
+              onPress={loadUsage}
+              disabled={checkingUsage}
+            >
+              <Ionicons
+                name="refresh"
+                size={18}
+                color="#111827"
+              />
+
+              <Text style={styles.refreshUsageText}>
+                {checkingUsage
+                  ? "Checking usage..."
+                  : "Refresh Usage"}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* INFORMATION CARD */}
+        <View style={styles.infoCard}>
+          <Ionicons
+            name="information-circle-outline"
+            size={22}
+            color="#4B5563"
+          />
+
+          <View style={styles.infoTextContainer}>
+            <Text style={styles.infoTitle}>
+              How App Protection Works
+            </Text>
+
+            <Text style={styles.infoText}>
+              FocusGuard reads your Android app usage to compare
+              your actual screen time with the limits you set.
+            </Text>
           </View>
         </View>
 
-        {/* Protection Summary */}
-        <View style={styles.summaryCard}>
-          <View style={styles.summaryIcon}>
-            <Ionicons
-              name="shield-checkmark"
-              size={28}
-              color="#FFFFFF"
-            />
-          </View>
-
-          <View style={styles.summaryContent}>
-            <Text style={styles.summaryTitle}>
-              Digital Protection
-            </Text>
-
-            <Text style={styles.summaryText}>
-              {limits.length === 0
-                ? "You haven't set any app limits yet."
-                : `${limits.length} app${
-                    limits.length === 1 ? "" : "s"
-                  } currently have a daily limit.`}
-            </Text>
-          </View>
-        </View>
-
-        {/* Add Button */}
+        {/* ADD BUTTON */}
         <TouchableOpacity
           style={styles.addButton}
           onPress={openAddModal}
-          activeOpacity={0.8}
         >
           <Ionicons
-            name="add-circle-outline"
+            name="add"
             size={22}
             color="#FFFFFF"
           />
@@ -403,371 +558,349 @@ export default function AppLimitsScreen() {
           </Text>
         </TouchableOpacity>
 
-        {/* Current Limits */}
+        {/* APP LIMITS */}
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>
             Your App Limits
           </Text>
 
-          <Text style={styles.countText}>
-            {limits.length}{" "}
-            {limits.length === 1 ? "app" : "apps"}
-          </Text>
+          {limits.length > 0 && (
+            <Text style={styles.sectionCount}>
+              {limits.length} app
+              {limits.length === 1 ? "" : "s"}
+            </Text>
+          )}
         </View>
 
         {loading ? (
-          <View style={styles.emptyCard}>
+          <View style={styles.emptyContainer}>
             <Text style={styles.emptyText}>
-              Loading app limits...
+              Loading your app limits...
             </Text>
           </View>
         ) : limits.length === 0 ? (
           <View style={styles.emptyCard}>
-            <View style={styles.emptyIcon}>
-              <Ionicons
-                name="shield-outline"
-                size={32}
-                color="#9CA3AF"
-              />
-            </View>
+            <Ionicons
+              name="hourglass-outline"
+              size={42}
+              color="#9CA3AF"
+            />
 
             <Text style={styles.emptyTitle}>
-              No app limits yet
+              No App Limits Yet
             </Text>
 
-            <Text style={styles.emptyDescription}>
-              Add a daily limit for apps that commonly
-              distract you during study time.
+            <Text style={styles.emptyText}>
+              Add a daily limit for an app to start monitoring
+              your screen time.
             </Text>
 
             <TouchableOpacity
               style={styles.emptyButton}
               onPress={openAddModal}
-              activeOpacity={0.8}
             >
               <Text style={styles.emptyButtonText}>
-                Set Your First Limit
+                Add Your First Limit
               </Text>
             </TouchableOpacity>
           </View>
         ) : (
-          <View style={styles.limitsCard}>
-            {limits.map((limit, index) => (
+          limits.map((limit) => {
+            const usedMilliseconds =
+              usage[limit.appName] || 0;
+
+            const percentage = getUsagePercentage(
+              limit.appName,
+              limit.dailyLimit
+            );
+
+            const reached = isLimitReached(
+              limit.appName,
+              limit.dailyLimit
+            );
+
+            return (
               <View
                 key={limit.id}
-                style={[
-                  styles.limitRow,
-                  index === limits.length - 1 &&
-                    styles.lastLimitRow,
-                ]}
+                style={styles.limitCard}
               >
-                <View style={styles.appIcon}>
-                  <Ionicons
-                    name={getAppIcon(limit.appName)}
-                    size={24}
-                    color="#4F46E5"
-                  />
-                </View>
+                <View style={styles.limitTopRow}>
+                  <View style={styles.appIconContainer}>
+                    <Ionicons
+                      name={getAppIcon(limit.appName) as any}
+                      size={25}
+                      color="#111827"
+                    />
+                  </View>
 
-                <View style={styles.limitInfo}>
-                  <Text style={styles.appName}>
-                    {limit.appName}
-                  </Text>
-
-                  <Text style={styles.limitText}>
-                    {formatLimit(limit.dailyLimit)}
-                  </Text>
-
-                  <View style={styles.activeRow}>
-                    <View style={styles.activeDot} />
-
-                    <Text style={styles.activeText}>
-                      Protection enabled
+                  <View style={styles.appInfo}>
+                    <Text style={styles.appName}>
+                      {limit.appName}
                     </Text>
+
+                    <Text style={styles.limitText}>
+                      Daily limit: {limit.dailyLimit} min
+                    </Text>
+                  </View>
+
+                  <View style={styles.actionButtons}>
+                    <TouchableOpacity
+                      style={styles.iconButton}
+                      onPress={() => openEditModal(limit)}
+                    >
+                      <Ionicons
+                        name="create-outline"
+                        size={19}
+                        color="#374151"
+                      />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.iconButton}
+                      onPress={() => deleteLimit(limit)}
+                    >
+                      <Ionicons
+                        name="trash-outline"
+                        size={19}
+                        color="#DC2626"
+                      />
+                    </TouchableOpacity>
                   </View>
                 </View>
 
-                <View style={styles.actions}>
-                  <TouchableOpacity
-                    style={styles.actionButton}
-                    onPress={() =>
-                      openEditModal(limit)
-                    }
-                  >
-                    <Ionicons
-                      name="create-outline"
-                      size={19}
-                      color="#4F46E5"
-                    />
-                  </TouchableOpacity>
+                {usageAccessGranted ? (
+                  <>
+                    <View style={styles.usageRow}>
+                      <Text style={styles.usageLabel}>
+                        Used today
+                      </Text>
 
-                  <TouchableOpacity
-                    style={styles.actionButton}
-                    onPress={() =>
-                      deleteLimit(limit)
-                    }
-                  >
+                      <Text
+                        style={[
+                          styles.usageValue,
+                          reached &&
+                            styles.usageValueReached,
+                        ]}
+                      >
+                        {formatUsageTime(
+                          usedMilliseconds
+                        )}
+                      </Text>
+                    </View>
+
+                    <View style={styles.progressBackground}>
+                      <View
+                        style={[
+                          styles.progressFill,
+                          {
+                            width: `${percentage}%`,
+                          },
+                          reached &&
+                            styles.progressFillReached,
+                        ]}
+                      />
+                    </View>
+
+                    <View style={styles.progressFooter}>
+                      <Text style={styles.progressPercentage}>
+                        {Math.round(percentage)}% used
+                      </Text>
+
+                      {reached && (
+                        <View style={styles.reachedBadge}>
+                          <Ionicons
+                            name="warning"
+                            size={13}
+                            color="#B91C1C"
+                          />
+
+                          <Text style={styles.reachedText}>
+                            Limit reached
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </>
+                ) : (
+                  <View style={styles.monitoringDisabled}>
                     <Ionicons
-                      name="trash-outline"
-                      size={19}
-                      color="#DC2626"
+                      name="lock-closed-outline"
+                      size={16}
+                      color="#6B7280"
                     />
-                  </TouchableOpacity>
-                </View>
+
+                    <Text style={styles.monitoringDisabledText}>
+                      Grant Usage Access to see actual usage.
+                    </Text>
+                  </View>
+                )}
               </View>
-            ))}
-          </View>
+            );
+          })
         )}
 
-        {/* How It Works */}
-        <View style={styles.infoCard}>
-          <View style={styles.infoIcon}>
-            <Ionicons
-              name="information-circle-outline"
-              size={23}
-              color="#4F46E5"
-            />
-          </View>
-
-          <View style={styles.infoContent}>
-            <Text style={styles.infoTitle}>
-              How App Protection Works
-            </Text>
-
-            <Text style={styles.infoText}>
-              Choose an app and set the maximum amount
-              of time you want to spend on it each day.
-              Your preferences are saved to your
-              FocusGuard account.
-            </Text>
-          </View>
-        </View>
-
-        {/* Honest Implementation Notice */}
-        <View style={styles.noticeCard}>
+        <View style={styles.bottomNotice}>
           <Ionicons
-            name="construct-outline"
+            name="shield-checkmark-outline"
             size={20}
-            color="#92400E"
+            color="#6B7280"
           />
 
-          <Text style={styles.noticeText}>
-            App usage monitoring and automatic blocking
-            require additional Android system permissions.
-            Your limits are currently stored as protection
-            preferences.
+          <Text style={styles.bottomNoticeText}>
+            FocusGuard uses Android Usage Access to measure app
+            usage. Automatic app blocking will be added in the
+            next stage.
           </Text>
         </View>
       </ScrollView>
 
-      {/* Add/Edit Modal */}
+      {/* ADD / EDIT MODAL */}
       <Modal
         visible={modalVisible}
         transparent
         animationType="slide"
-        onRequestClose={() => {
-          if (!saving) {
-            setModalVisible(false);
-          }
-        }}
+        onRequestClose={closeModal}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
             <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalTitle}>
-                  {editingId
-                    ? "Edit App Limit"
-                    : "Add App Limit"}
-                </Text>
+              <Text style={styles.modalTitle}>
+                {editingLimit
+                  ? "Edit App Limit"
+                  : "Add App Limit"}
+              </Text>
 
-                <Text style={styles.modalSubtitle}>
-                  Choose an app and daily limit.
-                </Text>
-              </View>
-
-              <TouchableOpacity
-                onPress={() => {
-                  if (!saving) {
-                    setModalVisible(false);
-                  }
-                }}
-              >
+              <TouchableOpacity onPress={closeModal}>
                 <Ionicons
-                  name="close-circle-outline"
-                  size={27}
-                  color="#9CA3AF"
+                  name="close"
+                  size={25}
+                  color="#374151"
                 />
               </TouchableOpacity>
             </View>
 
-            {/* App Selection */}
-            <Text style={styles.inputLabel}>
+            <Text style={styles.modalLabel}>
               Select App
             </Text>
 
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              contentContainerStyle={
-                styles.appSelector
-              }
+              style={styles.appSelector}
             >
-              {(editingId
-                ? APPS
-                : availableApps
-              ).map((app) => {
-                const selected =
-                  selectedApp === app.name;
-
-                return (
-                  <TouchableOpacity
-                    key={app.name}
-                    style={[
-                      styles.appOption,
-                      selected &&
-                        styles.appOptionSelected,
-                    ]}
-                    onPress={() =>
-                      setSelectedApp(app.name)
+              {APPS.map((app) => (
+                <TouchableOpacity
+                  key={app.name}
+                  style={[
+                    styles.appOption,
+                    selectedApp === app.name &&
+                      styles.appOptionSelected,
+                  ]}
+                  onPress={() =>
+                    setSelectedApp(app.name)
+                  }
+                >
+                  <Ionicons
+                    name={app.icon}
+                    size={20}
+                    color={
+                      selectedApp === app.name
+                        ? "#FFFFFF"
+                        : "#374151"
                     }
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons
-                      name={app.icon}
-                      size={21}
-                      color={
-                        selected
-                          ? "#FFFFFF"
-                          : "#4F46E5"
-                      }
-                    />
+                  />
 
-                    <Text
-                      style={[
-                        styles.appOptionText,
-                        selected &&
-                          styles.appOptionTextSelected,
-                      ]}
-                    >
-                      {app.name}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
+                  <Text
+                    style={[
+                      styles.appOptionText,
+                      selectedApp === app.name &&
+                        styles.appOptionTextSelected,
+                    ]}
+                  >
+                    {app.name}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </ScrollView>
 
-            {/* Limit Selection */}
-            <Text style={styles.inputLabel}>
-              Daily Time Limit
+            <Text style={styles.modalLabel}>
+              Daily Limit
             </Text>
 
             <View style={styles.limitOptions}>
-              {LIMIT_OPTIONS.map((minutes) => {
-                const selected =
-                  selectedLimit === minutes;
-
-                return (
-                  <TouchableOpacity
-                    key={minutes}
+              {LIMIT_OPTIONS.map((minutes) => (
+                <TouchableOpacity
+                  key={minutes}
+                  style={[
+                    styles.limitOption,
+                    selectedLimit === minutes &&
+                      styles.limitOptionSelected,
+                  ]}
+                  onPress={() => {
+                    setSelectedLimit(minutes);
+                    setCustomLimit("");
+                  }}
+                >
+                  <Text
                     style={[
-                      styles.limitOption,
-                      selected &&
-                        styles.limitOptionSelected,
+                      styles.limitOptionText,
+                      selectedLimit === minutes &&
+                        styles.limitOptionTextSelected,
                     ]}
-                    onPress={() =>
-                      setSelectedLimit(minutes)
-                    }
-                    activeOpacity={0.8}
                   >
-                    <Text
-                      style={[
-                        styles.limitOptionText,
-                        selected &&
-                          styles.limitOptionTextSelected,
-                      ]}
-                    >
-                      {minutes < 60
-                        ? `${minutes} min`
-                        : `${minutes / 60} hr`}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
+                    {minutes} min
+                  </Text>
+                </TouchableOpacity>
+              ))}
+
+              <TouchableOpacity
+                style={[
+                  styles.limitOption,
+                  selectedLimit === 0 &&
+                    styles.limitOptionSelected,
+                ]}
+                onPress={() => setSelectedLimit(0)}
+              >
+                <Text
+                  style={[
+                    styles.limitOptionText,
+                    selectedLimit === 0 &&
+                      styles.limitOptionTextSelected,
+                  ]}
+                >
+                  Custom
+                </Text>
+              </TouchableOpacity>
             </View>
 
-            {/* Custom Limit */}
-            <Text style={styles.inputLabel}>
-              Or enter a custom limit
-            </Text>
-
-            <View style={styles.customInputContainer}>
+            {selectedLimit === 0 && (
               <TextInput
                 style={styles.customInput}
-                keyboardType="numeric"
-                placeholder="Minutes"
+                value={customLimit}
+                onChangeText={setCustomLimit}
+                placeholder="Enter minutes"
                 placeholderTextColor="#9CA3AF"
-                onChangeText={(value) => {
-                  const number = Number(value);
-
-                  if (
-                    !Number.isNaN(number) &&
-                    number > 0
-                  ) {
-                    setSelectedLimit(number);
-                  }
-                }}
+                keyboardType="numeric"
               />
+            )}
 
-              <Text style={styles.minutesLabel}>
-                minutes/day
-              </Text>
-            </View>
-
-            {/* Preview */}
-            <View style={styles.previewCard}>
-              <Ionicons
-                name="shield-checkmark-outline"
-                size={21}
-                color="#4F46E5"
-              />
-
-              <Text style={styles.previewText}>
-                {selectedApp} will have a daily target
-                of{" "}
-                <Text style={styles.previewBold}>
-                  {formatLimit(selectedLimit)}
-                </Text>
-                .
-              </Text>
-            </View>
-
-            {/* Save */}
             <TouchableOpacity
-              style={[
-                styles.saveButton,
-                saving && styles.saveButtonDisabled,
-              ]}
+              style={styles.saveButton}
               onPress={saveLimit}
-              disabled={saving}
-              activeOpacity={0.8}
             >
-              <Ionicons
-                name={
-                  editingId
-                    ? "checkmark-circle-outline"
-                    : "save-outline"
-                }
-                size={21}
-                color="#FFFFFF"
-              />
-
               <Text style={styles.saveButtonText}>
-                {saving
-                  ? "Saving..."
-                  : editingId
+                {editingLimit
                   ? "Update Limit"
                   : "Save Limit"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={closeModal}
+            >
+              <Text style={styles.cancelButtonText}>
+                Cancel
               </Text>
             </TouchableOpacity>
           </View>
@@ -780,325 +913,423 @@ export default function AppLimitsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#FFFFFF",
   },
 
-  contentContainer: {
+  scrollContent: {
     padding: 20,
-    paddingBottom: 45,
+    paddingBottom: 40,
   },
 
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 22,
-  },
-
-  headerText: {
-    flex: 1,
+    marginBottom: 20,
   },
 
   title: {
-    fontSize: 27,
+    fontSize: 30,
     fontWeight: "800",
     color: "#111827",
   },
 
   subtitle: {
-    marginTop: 5,
-    fontSize: 13,
+    fontSize: 15,
+    lineHeight: 22,
     color: "#6B7280",
+    marginTop: 6,
   },
 
-  headerIcon: {
-    width: 53,
-    height: 53,
-    borderRadius: 27,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#EEF2FF",
-  },
-
-  summaryCard: {
-    backgroundColor: "#4F46E5",
-    borderRadius: 21,
+  usageAccessCard: {
+    backgroundColor: "#F5F7FA",
+    borderRadius: 18,
     padding: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 15,
-  },
-
-  summaryIcon: {
-    width: 54,
-    height: 54,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.18)",
-    marginRight: 13,
-  },
-
-  summaryContent: {
-    flex: 1,
-  },
-
-  summaryTitle: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#FFFFFF",
-  },
-
-  summaryText: {
-    marginTop: 4,
-    fontSize: 12,
-    lineHeight: 18,
-    color: "#E0E7FF",
-  },
-
-  addButton: {
-    height: 53,
-    borderRadius: 16,
-    backgroundColor: "#4F46E5",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 27,
-  },
-
-  addButtonText: {
-    marginLeft: 8,
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#FFFFFF",
-  },
-
-  sectionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 12,
-  },
-
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#111827",
-  },
-
-  countText: {
-    fontSize: 12,
-    color: "#6B7280",
-  },
-
-  limitsCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 19,
-    paddingHorizontal: 16,
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: "#E5E7EB",
-    marginBottom: 18,
   },
 
-  limitRow: {
+  usageAccessHeader: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F3F4F6",
   },
 
-  lastLimitRow: {
-    borderBottomWidth: 0,
-  },
-
-  appIcon: {
+  usageIconContainer: {
     width: 48,
     height: 48,
-    borderRadius: 15,
+    borderRadius: 14,
+    backgroundColor: "#E5E7EB",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EEF2FF",
     marginRight: 12,
   },
 
-  limitInfo: {
+  usageHeaderText: {
     flex: 1,
   },
 
-  appName: {
-    fontSize: 15,
-    fontWeight: "800",
+  usageAccessTitle: {
+    fontSize: 17,
+    fontWeight: "700",
     color: "#111827",
   },
 
-  limitText: {
+  usageAccessSubtitle: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#6B7280",
     marginTop: 3,
-    fontSize: 12,
-    color: "#4F46E5",
-    fontWeight: "700",
   },
 
-  activeRow: {
+  statusContainer: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 4,
+    padding: 12,
+    borderRadius: 12,
+    marginTop: 15,
   },
 
-  activeDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: "#16A34A",
-    marginRight: 5,
+  statusEnabled: {
+    backgroundColor: "#DCFCE7",
   },
 
-  activeText: {
-    fontSize: 9,
-    color: "#16A34A",
+  statusDisabled: {
+    backgroundColor: "#FEF3C7",
+  },
+
+  statusText: {
+    marginLeft: 8,
+    fontSize: 13,
     fontWeight: "600",
   },
 
-  actions: {
-    flexDirection: "row",
-    marginLeft: 8,
+  statusTextEnabled: {
+    color: "#15803D",
   },
 
-  actionButton: {
-    width: 37,
-    height: 37,
-    borderRadius: 11,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#F3F4F6",
-    marginLeft: 6,
+  statusTextDisabled: {
+    color: "#B45309",
   },
 
-  emptyCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 19,
-    padding: 25,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    marginBottom: 18,
-  },
-
-  emptyIcon: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#F3F4F6",
-    marginBottom: 12,
-  },
-
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#111827",
-  },
-
-  emptyText: {
-    fontSize: 13,
-    color: "#6B7280",
-  },
-
-  emptyDescription: {
-    marginTop: 6,
-    textAlign: "center",
-    fontSize: 12,
-    lineHeight: 18,
-    color: "#6B7280",
-    maxWidth: 290,
-  },
-
-  emptyButton: {
-    marginTop: 16,
-    paddingHorizontal: 18,
-    paddingVertical: 11,
+  permissionButton: {
+    backgroundColor: "#111827",
     borderRadius: 12,
-    backgroundColor: "#EEF2FF",
+    paddingVertical: 13,
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
   },
 
-  emptyButtonText: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: "#4F46E5",
+  permissionButtonText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+    marginLeft: 7,
+  },
+
+  refreshUsageButton: {
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    borderRadius: 12,
+    paddingVertical: 12,
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  refreshUsageText: {
+    color: "#111827",
+    fontSize: 14,
+    fontWeight: "700",
+    marginLeft: 7,
   },
 
   infoCard: {
     flexDirection: "row",
-    backgroundColor: "#EEF2FF",
-    borderRadius: 17,
-    padding: 15,
-    marginBottom: 15,
+    backgroundColor: "#F9FAFB",
+    borderRadius: 15,
+    padding: 16,
+    marginBottom: 18,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
   },
 
-  infoIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 13,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFFFFF",
-    marginRight: 11,
-  },
-
-  infoContent: {
+  infoTextContainer: {
     flex: 1,
+    marginLeft: 10,
   },
 
   infoTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#312E81",
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#374151",
+    marginBottom: 4,
   },
 
   infoText: {
-    marginTop: 5,
-    fontSize: 11,
-    lineHeight: 17,
-    color: "#4338CA",
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#6B7280",
   },
 
-  noticeCard: {
+  addButton: {
+    backgroundColor: "#111827",
+    borderRadius: 14,
+    paddingVertical: 14,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 24,
+  },
+
+  addButtonText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "700",
+    marginLeft: 7,
+  },
+
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+
+  sectionTitle: {
+    fontSize: 19,
+    fontWeight: "800",
+    color: "#111827",
+  },
+
+  sectionCount: {
+    fontSize: 13,
+    color: "#6B7280",
+  },
+
+  limitCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 17,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    shadowColor: "#000000",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    elevation: 2,
+  },
+
+  limitTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  appIconContainer: {
+    width: 46,
+    height: 46,
+    borderRadius: 13,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  appInfo: {
+    flex: 1,
+    marginLeft: 12,
+  },
+
+  appName: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#111827",
+  },
+
+  limitText: {
+    fontSize: 13,
+    color: "#6B7280",
+    marginTop: 3,
+  },
+
+  actionButtons: {
+    flexDirection: "row",
+    gap: 6,
+  },
+
+  iconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: "#F9FAFB",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  usageRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 18,
+    marginBottom: 8,
+  },
+
+  usageLabel: {
+    fontSize: 13,
+    color: "#6B7280",
+  },
+
+  usageValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+  },
+
+  usageValueReached: {
+    color: "#DC2626",
+  },
+
+  progressBackground: {
+    height: 8,
+    backgroundColor: "#E5E7EB",
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+
+  progressFill: {
+    height: "100%",
+    backgroundColor: "#111827",
+    borderRadius: 10,
+  },
+
+  progressFillReached: {
+    backgroundColor: "#DC2626",
+  },
+
+  progressFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 7,
+  },
+
+  progressPercentage: {
+    fontSize: 12,
+    color: "#6B7280",
+  },
+
+  reachedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FEE2E2",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+
+  reachedText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#B91C1C",
+    marginLeft: 4,
+  },
+
+  monitoringDisabled: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 15,
+    padding: 11,
+    backgroundColor: "#F9FAFB",
+    borderRadius: 10,
+  },
+
+  monitoringDisabledText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#6B7280",
+    marginLeft: 7,
+  },
+
+  emptyCard: {
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderRadius: 18,
+    padding: 30,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+
+  emptyContainer: {
+    alignItems: "center",
+    padding: 30,
+  },
+
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#374151",
+    marginTop: 12,
+  },
+
+  emptyText: {
+    textAlign: "center",
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#6B7280",
+    marginTop: 7,
+  },
+
+  emptyButton: {
+    backgroundColor: "#111827",
+    borderRadius: 11,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    marginTop: 18,
+  },
+
+  emptyButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  bottomNotice: {
     flexDirection: "row",
     alignItems: "flex-start",
-    backgroundColor: "#FFFBEB",
-    borderRadius: 15,
-    padding: 13,
-    marginBottom: 10,
+    marginTop: 20,
+    padding: 15,
+    backgroundColor: "#F9FAFB",
+    borderRadius: 13,
   },
 
-  noticeText: {
+  bottomNoticeText: {
     flex: 1,
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#6B7280",
     marginLeft: 8,
-    fontSize: 10,
-    lineHeight: 16,
-    color: "#92400E",
   },
 
   modalOverlay: {
     flex: 1,
-    justifyContent: "flex-end",
     backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
   },
 
   modalContainer: {
     backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 25,
     borderTopRightRadius: 25,
-    padding: 20,
+    padding: 22,
     paddingBottom: 30,
-    maxHeight: "90%",
   },
 
   modalHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-start",
+    alignItems: "center",
     marginBottom: 22,
   },
 
@@ -1108,45 +1339,38 @@ const styles = StyleSheet.create({
     color: "#111827",
   },
 
-  modalSubtitle: {
-    marginTop: 4,
-    fontSize: 12,
-    color: "#6B7280",
-  },
-
-  inputLabel: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#111827",
+  modalLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#374151",
     marginBottom: 10,
   },
 
   appSelector: {
-    paddingBottom: 5,
+    marginBottom: 20,
   },
 
   appOption: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 13,
-    paddingVertical: 10,
-    borderRadius: 13,
-    backgroundColor: "#EEF2FF",
-    marginRight: 8,
     borderWidth: 1,
-    borderColor: "#E0E7FF",
+    borderColor: "#D1D5DB",
+    borderRadius: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginRight: 8,
   },
 
   appOptionSelected: {
-    backgroundColor: "#4F46E5",
-    borderColor: "#4F46E5",
+    backgroundColor: "#111827",
+    borderColor: "#111827",
   },
 
   appOptionText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#374151",
     marginLeft: 6,
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#4F46E5",
   },
 
   appOptionTextSelected: {
@@ -1156,93 +1380,67 @@ const styles = StyleSheet.create({
   limitOptions: {
     flexDirection: "row",
     flexWrap: "wrap",
-    marginBottom: 17,
+    gap: 8,
+    marginBottom: 12,
   },
 
   limitOption: {
-    width: "31%",
-    paddingVertical: 11,
-    alignItems: "center",
-    borderRadius: 12,
-    backgroundColor: "#F3F4F6",
-    marginRight: "3.5%",
-    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    borderRadius: 10,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
   },
 
   limitOptionSelected: {
-    backgroundColor: "#4F46E5",
+    backgroundColor: "#111827",
+    borderColor: "#111827",
   },
 
   limitOptionText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#4B5563",
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#374151",
   },
 
   limitOptionTextSelected: {
     color: "#FFFFFF",
   },
 
-  customInputContainer: {
-    height: 49,
+  customInput: {
     borderWidth: 1,
     borderColor: "#D1D5DB",
-    borderRadius: 13,
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    marginBottom: 16,
-  },
-
-  customInput: {
-    flex: 1,
-    fontSize: 14,
+    borderRadius: 11,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
     color: "#111827",
-  },
-
-  minutesLabel: {
-    fontSize: 11,
-    color: "#6B7280",
-  },
-
-  previewCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#EEF2FF",
-    borderRadius: 13,
-    padding: 12,
     marginBottom: 15,
   },
 
-  previewText: {
-    flex: 1,
-    marginLeft: 8,
-    fontSize: 11,
-    lineHeight: 17,
-    color: "#4338CA",
-  },
-
-  previewBold: {
-    fontWeight: "800",
-  },
-
   saveButton: {
-    height: 53,
-    borderRadius: 15,
-    backgroundColor: "#4F46E5",
-    flexDirection: "row",
+    backgroundColor: "#111827",
+    borderRadius: 13,
+    paddingVertical: 14,
     alignItems: "center",
-    justifyContent: "center",
-  },
-
-  saveButtonDisabled: {
-    opacity: 0.6,
+    marginTop: 5,
   },
 
   saveButtonText: {
-    marginLeft: 8,
-    fontSize: 14,
-    fontWeight: "800",
     color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+
+  cancelButton: {
+    alignItems: "center",
+    paddingVertical: 13,
+    marginTop: 5,
+  },
+
+  cancelButtonText: {
+    color: "#6B7280",
+    fontSize: 14,
+    fontWeight: "600",
   },
 });
